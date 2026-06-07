@@ -36,7 +36,6 @@ export type KnownProvider =
 	| "groq"
 	| "cerebras"
 	| "openrouter"
-	| "requesty"
 	| "vercel-ai-gateway"
 	| "zai"
 	| "zai-coding-cn"
