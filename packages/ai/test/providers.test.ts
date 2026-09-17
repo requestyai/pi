@@ -11,6 +11,7 @@ import { cloudflareAIGatewayProvider } from "../src/providers/cloudflare-ai-gate
 import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
 import { fauxAssistantMessage, fauxProvider } from "../src/providers/faux.ts";
 import { googleVertexProvider } from "../src/providers/google-vertex.ts";
+import { requestyProvider } from "../src/providers/requesty.ts";
 import type {
 	Api,
 	DeferredCancelOptions,
@@ -274,6 +275,29 @@ describe("builtin providers", () => {
 				signal: neverAbortedSignal,
 			}),
 		).toMatchObject({ auth: {}, env: { AWS_PROFILE: "work" } });
+	});
+
+	it("routes Requesty models through the router's Anthropic and OpenAI-compatible endpoints", async () => {
+		const models = createModels({ authContext: fakeAuthContext({ REQUESTY_API_KEY: "rq-key" }) });
+		models.setProvider(requestyProvider());
+
+		expect(await models.getAuth("requesty")).toEqual({
+			auth: { apiKey: "rq-key" },
+			source: "REQUESTY_API_KEY",
+		});
+
+		const requestyModels = models.getModels("requesty");
+		expect(requestyModels.length).toBeGreaterThan(0);
+		for (const model of requestyModels) {
+			if (model.id.startsWith("anthropic/")) {
+				expect(model.api, model.id).toBe("anthropic-messages");
+				expect(model.baseUrl, model.id).toBe("https://router.requesty.ai");
+			} else {
+				expect(model.api, model.id).toBe("openai-completions");
+				expect(model.baseUrl, model.id).toBe("https://router.requesty.ai/v1");
+			}
+		}
+		expect(models.getModel("requesty", "anthropic/claude-sonnet-4-6")?.api).toBe("anthropic-messages");
 	});
 
 	it("reports bedrock as configured from ambient AWS credentials without an api key", async () => {

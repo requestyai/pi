@@ -164,6 +164,23 @@ interface AiGatewayModel {
 	};
 }
 
+interface RequestyModelListItem {
+	id: string;
+	api?: string;
+	input_price?: number;
+	output_price?: number;
+	caching_price?: number;
+	cached_price?: number;
+	context_window?: number;
+	max_output_tokens?: number;
+	supports_tool_calling?: boolean;
+	supports_vision?: boolean;
+	supports_reasoning?: boolean;
+	supports_role_developer?: boolean;
+}
+
+const REQUESTY_ROUTER_URL = "https://router.requesty.ai";
+
 const COPILOT_STATIC_HEADERS = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
 	"Editor-Version": "vscode/1.107.0",
@@ -1322,6 +1339,70 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 		return models;
 	} catch (error) {
 		console.error("Failed to fetch Vercel AI Gateway models:", error);
+		if (generatorOptions.strict) throw error;
+		return [];
+	}
+}
+
+async function fetchRequestyModels(): Promise<Model<any>[]> {
+	try {
+		console.log("Fetching models from Requesty API...");
+		const response = await fetch(`${REQUESTY_ROUTER_URL}/v1/models`);
+		if (!response.ok) throw new Error(`Requesty API returned ${response.status}`);
+		const data = (await response.json()) as { data?: RequestyModelListItem[] };
+		const models: Model<any>[] = [];
+
+		for (const model of data.data ?? []) {
+			if (model.api !== "chat" || !model.supports_tool_calling) continue;
+
+			const input: ("text" | "image")[] = model.supports_vision ? ["text", "image"] : ["text"];
+			// Requesty prices are $/token.
+			const cost = {
+				input: roundCost((model.input_price ?? 0) * 1_000_000),
+				output: roundCost((model.output_price ?? 0) * 1_000_000),
+				cacheRead: roundCost((model.cached_price ?? 0) * 1_000_000),
+				cacheWrite: roundCost((model.caching_price ?? 0) * 1_000_000),
+			};
+			const contextWindow = model.context_window || 4096;
+			const maxTokens = model.max_output_tokens || 4096;
+
+			// Anthropic models go through Requesty's native /v1/messages endpoint so thinking blocks,
+			// cache_control, and signatures pass through unchanged. Everything else uses chat completions.
+			if (model.id.startsWith("anthropic/")) {
+				models.push({
+					id: model.id,
+					name: model.id,
+					api: "anthropic-messages",
+					baseUrl: REQUESTY_ROUTER_URL,
+					provider: "requesty",
+					reasoning: model.supports_reasoning === true,
+					input,
+					cost,
+					contextWindow,
+					maxTokens,
+				});
+				continue;
+			}
+
+			models.push({
+				id: model.id,
+				name: model.id,
+				api: "openai-completions",
+				baseUrl: `${REQUESTY_ROUTER_URL}/v1`,
+				provider: "requesty",
+				reasoning: model.supports_reasoning === true,
+				input,
+				cost,
+				contextWindow,
+				maxTokens,
+				...(model.supports_role_developer ? {} : { compat: { supportsDeveloperRole: false } }),
+			});
+		}
+
+		console.log(`Fetched ${models.length} tool-capable models from Requesty`);
+		return models;
+	} catch (error) {
+		console.error("Failed to fetch Requesty models:", error);
 		if (generatorOptions.strict) throw error;
 		return [];
 	}
@@ -2549,9 +2630,10 @@ async function generateModels() {
 	const modelsDevModels = await loadModelsDevData();
 	const openRouterModels = await fetchOpenRouterModels();
 	const aiGatewayModels = await fetchAiGatewayModels();
+	const requestyModels = await fetchRequestyModels();
 
 	// Combine models (models.dev has priority)
-	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
+	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels, ...requestyModels].filter(
 		(model) =>
 			!(model.provider === "xai" && XAI_BUILTIN_EXCLUDED_MODEL_IDS.has(model.id)) &&
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
